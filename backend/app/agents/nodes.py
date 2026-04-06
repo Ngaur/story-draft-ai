@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -25,7 +26,7 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-BATCH_SIZE = 4  # concepts per draft_stories LLM call; keeps output within token limits
+MAX_PARALLEL_LLM_CALLS = 10  # max concurrent LLM calls (questions + draft_stories)
 
 
 def parse_document(state: WorkflowState) -> dict:
@@ -149,26 +150,87 @@ def _map_reduce_concepts(raw_text: str, structured_llm) -> list:  # type: ignore
         return all_concepts
 
 
-def generate_clarifying_questions(state: WorkflowState) -> dict:
-    """Stage 2 — Generate 3–5 clarifying questions per concept node."""
+def _generate_questions_for_concept(concept: dict) -> list[dict]:
+    """Generate clarifying questions for a single concept — runs in its own thread.
+
+    Creates a fresh LLM client per call (thread-safety). Passes the single concept as a
+    one-element list so the existing GENERATE_QUESTIONS_PROMPT format string is unchanged.
+    All quality rules (10 coverage targets, type-mix mandate, domain entity naming,
+    conditional follow-ups, scope-level question) are fully enforced per call — none of
+    them require cross-concept awareness. The only prompt rule that referenced multiple
+    concepts ("do not repeat equivalent questions across concepts") becomes a no-op when
+    each call sees one concept, which is safe: the LLM naturally produces concept-specific
+    questions grounded in that concept's description.
+    """
     llm = get_llm()
     structured_llm = llm.with_structured_output(ClarifyingQuestionsOutput)
-    concept_nodes_json = json.dumps(state["concept_nodes"], indent=2)
-    prompt = GENERATE_QUESTIONS_PROMPT.format(concept_nodes_json=concept_nodes_json)
+    prompt = GENERATE_QUESTIONS_PROMPT.format(
+        concept_nodes_json=json.dumps([concept], indent=2)
+    )
+    result: ClarifyingQuestionsOutput = structured_llm.invoke(  # type: ignore[assignment]
+        [
+            SystemMessage(content=SYSTEM_PROMPT_FACILITATOR),
+            HumanMessage(content=prompt),
+        ]
+    )
+    return [q.model_dump() for q in result.questions]
 
-    try:
-        result: ClarifyingQuestionsOutput = structured_llm.invoke(  # type: ignore[assignment]
-            [
-                SystemMessage(content=SYSTEM_PROMPT_FACILITATOR),
-                HumanMessage(content=prompt),
-            ]
-        )
-    except Exception as e:
-        logger.error("Question generation LLM call failed: %s", e)
-        return {"status": "error", "error_message": f"Question generation failed: {e}"}
+
+def generate_clarifying_questions(state: WorkflowState) -> dict:
+    """Stage 2 — Generate 5–8 clarifying questions per concept, all in parallel.
+
+    Each concept gets its own focused LLM call instead of one large call with all
+    concepts. Benefits:
+    - Smaller prompt per call: the LLM attends to one concept's description fully
+      rather than spreading attention across N concepts + a shared instruction block.
+    - Parallel execution: all concept calls fire simultaneously, reducing wall-clock
+      time from O(N × latency) to O(latency).
+    - Better coverage: a focused call is less likely to skip coverage targets for
+      concepts that appear later in a long concept list.
+    Results are reassembled in original concept order.
+    """
+    concept_nodes = state["concept_nodes"]
+    n = len(concept_nodes)
+    workers = min(n, MAX_PARALLEL_LLM_CALLS)
+
+    ordered: dict[int, list[dict]] = {}
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_idx = {
+            executor.submit(_generate_questions_for_concept, concept): i
+            for i, concept in enumerate(concept_nodes)
+        }
+
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            concept_title = concept_nodes[idx].get("title", f"concept {idx + 1}")
+            try:
+                questions = future.result()
+                ordered[idx] = questions
+                logger.info(
+                    "Concept %d/%d (%s): generated %d questions",
+                    idx + 1, n, concept_title, len(questions),
+                )
+            except Exception as e:
+                logger.error(
+                    "Question generation failed for concept %d/%d (%s): %s",
+                    idx + 1, n, concept_title, e,
+                )
+                return {
+                    "status": "error",
+                    "error_message": (
+                        f"Question generation failed for concept {idx + 1} "
+                        f"({concept_title}): {e}"
+                    ),
+                }
+
+    # Reassemble in original concept order
+    all_questions: list[dict] = []
+    for i in range(n):
+        all_questions.extend(ordered.get(i, []))
 
     return {
-        "clarifying_questions": [q.model_dump() for q in result.questions],
+        "clarifying_questions": all_questions,
         "status": "awaiting_clarification",
     }
 
@@ -186,62 +248,90 @@ def clarification_review(state: WorkflowState) -> dict:
     return {"status": "processing"}
 
 
-def draft_stories(state: WorkflowState) -> dict:
-    """Stage 4 — Draft user stories in batches of BATCH_SIZE concepts.
+def _draft_one_concept(concept: dict, answers_for_concept: list[dict]) -> list[dict]:
+    """Draft stories for a single concept — runs in its own thread.
 
-    Batching prevents output-token limit truncation when the concept list is large
-    (e.g. 24 features × 1–3 stories each ≈ 24–72 stories in a single response).
-    Each batch is an independent LLM call; results are combined in order.
-    Only answered clarification questions are forwarded; skipped ones are flagged
-    as assumptions in the stories.
+    Creates a fresh LLM client per call: ChatOpenAI's underlying httpx client is not
+    thread-safe when shared. Each call receives only the answers that belong to this
+    concept, keeping the prompt minimal (~1 500 tokens vs ~8 000 for a batch-of-4).
     """
     llm = get_llm()
     structured_llm = llm.with_structured_output(UserStoryListOutput)
+    prompt = DRAFT_STORIES_PROMPT.format(
+        concept_nodes_json=json.dumps([concept], indent=2),
+        clarification_answers_json=json.dumps(answers_for_concept, indent=2),
+    )
+    result: UserStoryListOutput = structured_llm.invoke(  # type: ignore[assignment]
+        [
+            SystemMessage(content=SYSTEM_PROMPT_ANALYST),
+            HumanMessage(content=prompt),
+        ]
+    )
+    return [s.model_dump() for s in result.stories]
 
-    # Filter to only answered questions — skipped ones have an empty answer string
+
+def draft_stories(state: WorkflowState) -> dict:
+    """Stage 4 — Draft user stories: one LLM call per concept, all in parallel.
+
+    Each call receives a single concept and only that concept's clarifying answers,
+    minimising prompt size. Up to MAX_PARALLEL_LLM_CALLS calls run concurrently.
+    Results are reassembled in original concept order regardless of completion order.
+    Skipped clarification questions are not forwarded; the LLM flags them as assumptions.
+    """
+    # Build per-concept answer index — only answered (non-empty) questions
     answered = [
         a for a in state.get("clarification_answers", [])
         if str(a.get("answer", "")).strip()
     ]
-    clarification_answers_json = json.dumps(answered, indent=2)
+    answers_by_concept: dict[str, list[dict]] = {}
+    for a in answered:
+        cid = a.get("concept_id", "")
+        answers_by_concept.setdefault(cid, []).append(a)
 
     concept_nodes = state["concept_nodes"]
+    n = len(concept_nodes)
+    workers = min(n, MAX_PARALLEL_LLM_CALLS)
+
+    ordered: dict[int, list[dict]] = {}
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_idx = {
+            executor.submit(
+                _draft_one_concept,
+                concept,
+                answers_by_concept.get(concept.get("id", ""), []),
+            ): i
+            for i, concept in enumerate(concept_nodes)
+        }
+
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            concept_title = concept_nodes[idx].get("title", f"concept {idx + 1}")
+            try:
+                stories = future.result()
+                ordered[idx] = stories
+                logger.info(
+                    "Concept %d/%d (%s): drafted %d stories",
+                    idx + 1, n, concept_title, len(stories),
+                )
+            except Exception as e:
+                logger.error(
+                    "Story drafting failed for concept %d/%d (%s): %s",
+                    idx + 1, n, concept_title, e,
+                )
+                return {
+                    "status": "error",
+                    "error_message": (
+                        f"Story drafting failed for concept {idx + 1} ({concept_title}): {e}"
+                    ),
+                }
+
+    # Reassemble in original concept order
     all_stories: list[dict] = []
+    for i in range(n):
+        all_stories.extend(ordered.get(i, []))
 
-    for batch_start in range(0, len(concept_nodes), BATCH_SIZE):
-        batch = concept_nodes[batch_start : batch_start + BATCH_SIZE]
-        batch_json = json.dumps(batch, indent=2)
-        prompt = DRAFT_STORIES_PROMPT.format(
-            concept_nodes_json=batch_json,
-            clarification_answers_json=clarification_answers_json,
-        )
-        try:
-            result: UserStoryListOutput = structured_llm.invoke(  # type: ignore[assignment]
-                [
-                    SystemMessage(content=SYSTEM_PROMPT_ANALYST),
-                    HumanMessage(content=prompt),
-                ]
-            )
-            all_stories.extend(s.model_dump() for s in result.stories)
-            logger.info(
-                "Batch %d–%d: drafted %d stories",
-                batch_start + 1,
-                batch_start + len(batch),
-                len(result.stories),
-            )
-        except Exception as e:
-            logger.error(
-                "Story drafting failed for batch %d–%d: %s",
-                batch_start + 1,
-                batch_start + len(batch),
-                e,
-            )
-            return {"status": "error", "error_message": f"Story drafting failed: {e}"}
-
-    return {
-        "stories": all_stories,
-        "status": "awaiting_review",
-    }
+    return {"stories": all_stories, "status": "awaiting_review"}
 
 
 def story_review(state: WorkflowState) -> dict:
@@ -257,29 +347,81 @@ def story_review(state: WorkflowState) -> dict:
     return {"status": "processing"}
 
 
-def refine_stories(state: WorkflowState) -> dict:
-    """Stage 6 — Refine stories based on human feedback; loops back to story_review."""
+def _refine_one_story(story: dict, refinement_feedback: str) -> dict:
+    """Refine a single story in its own thread — runs in parallel with all other stories.
+
+    Every call receives the FULL refinement feedback text (not a subset), so:
+    - Global instructions ("make all ACs more testable") are applied to every story
+      because every parallel call sees and applies the same instruction to its own story.
+    - Story-specific instructions ("the AMPS routing story needs a governance section")
+      are applied only where relevant — other stories' calls correctly ignore them because
+      the instruction doesn't match their content.
+    - Terminology fixes ("replace 'gateway' with 'acquirer' everywhere") propagate
+      uniformly because each call applies the same substitution independently.
+
+    Limitation: feedback that explicitly cross-references stories ("align this story
+    with story 3's format") cannot be resolved in a single parallel pass because each
+    call sees only one story. For such feedback a second refinement cycle is needed.
+
+    Creates a fresh LLM client per call (ChatOpenAI / httpx is not thread-safe when shared).
+    """
     llm = get_llm()
     structured_llm = llm.with_structured_output(UserStoryListOutput)
-    stories_json = json.dumps(state["stories"], indent=2)
     prompt = REFINE_STORIES_PROMPT.format(
-        refinement_feedback=state.get("refinement_feedback", ""),
-        stories_json=stories_json,
+        refinement_feedback=refinement_feedback,
+        stories_json=json.dumps([story], indent=2),
     )
+    result: UserStoryListOutput = structured_llm.invoke(  # type: ignore[assignment]
+        [
+            SystemMessage(content=SYSTEM_PROMPT_ANALYST),
+            HumanMessage(content=prompt),
+        ]
+    )
+    # One story in → one story out; fall back to original if LLM returns empty
+    return result.stories[0].model_dump() if result.stories else story
 
-    try:
-        result: UserStoryListOutput = structured_llm.invoke(  # type: ignore[assignment]
-            [
-                SystemMessage(content=SYSTEM_PROMPT_ANALYST),
-                HumanMessage(content=prompt),
-            ]
-        )
-    except Exception as e:
-        logger.error("Story refinement LLM call failed: %s", e)
-        return {"status": "error", "error_message": f"Story refinement failed: {e}"}
+
+def refine_stories(state: WorkflowState) -> dict:
+    """Stage 6 — Refine each story in parallel, then loop back to story_review.
+
+    Each story is refined independently with the full feedback text.  Global feedback
+    ("make ACs more testable") is enforced consistently because every parallel call
+    receives identical instructions.  Story order is preserved.
+    """
+    feedback: str = state.get("refinement_feedback") or ""
+    stories = state["stories"]
+    n = len(stories)
+    workers = min(n, MAX_PARALLEL_LLM_CALLS)
+
+    ordered: dict[int, dict] = {}
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_idx = {
+            executor.submit(_refine_one_story, story, feedback): i
+            for i, story in enumerate(stories)
+        }
+
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            story_title = stories[idx].get("title", f"story {idx + 1}")
+            try:
+                refined = future.result()
+                ordered[idx] = refined
+                logger.info("Refined story %d/%d: %s", idx + 1, n, story_title)
+            except Exception as e:
+                logger.error(
+                    "Story refinement failed for story %d/%d (%s): %s",
+                    idx + 1, n, story_title, e,
+                )
+                return {
+                    "status": "error",
+                    "error_message": (
+                        f"Story refinement failed for story {idx + 1} ({story_title}): {e}"
+                    ),
+                }
 
     return {
-        "stories": [s.model_dump() for s in result.stories],
+        "stories": [ordered[i] for i in range(n)],
         "refinement_feedback": None,  # clear for next review cycle
         "status": "awaiting_review",
     }

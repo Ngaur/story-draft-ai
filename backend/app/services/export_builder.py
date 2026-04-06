@@ -1,6 +1,26 @@
+import re
+
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Pt, RGBColor
+
+# XML 1.0 forbids these code points in any text node or attribute value.
+# Pattern covers: null, C0 controls (except \t \n \r), lone surrogates, and non-characters.
+_ILLEGAL_XML_RE = re.compile(
+    r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]"
+)
+
+
+def _safe(value: object) -> str:
+    """Convert value to str and strip XML-illegal characters.
+
+    python-docx writes text directly into XML; any character outside the XML 1.0
+    legal set raises 'All strings must be XML compatible'. This guard removes null
+    bytes and control characters that LLMs occasionally emit in their output.
+    Tab (\\x09), newline (\\x0a), and carriage-return (\\x0d) are preserved.
+    """
+    text = str(value) if value is not None else ""
+    return _ILLEGAL_XML_RE.sub("", text)
 
 
 def _add_section_heading(doc: Document, text: str) -> None:
@@ -11,7 +31,7 @@ def _add_section_heading(doc: Document, text: str) -> None:
 def _add_bullet_list(doc: Document, items: list[str]) -> None:
     """Add each item as a bullet-list paragraph. Skips empty items."""
     for item in items:
-        item = item.strip()
+        item = _safe(item).strip()
         if item:
             doc.add_paragraph(item, style="List Bullet")
 
@@ -60,32 +80,32 @@ def build_docx(stories: list[dict], output_path: str) -> None:
         doc.add_paragraph()  # spacer
 
         # ── Section 1: Epic & Title ───────────────────────────────────────────
-        epic = story.get("epic_title", "")
+        epic = _safe(story.get("epic_title", ""))
         if epic:
             epic_para = doc.add_paragraph()
             epic_run = epic_para.add_run(f"Epic: {epic}")
             epic_run.bold = True
-            epic_run.font.color.rgb = RGBColor(0x63, 0x66, 0xF1)  # indigo
+            epic_run.font.color.rgb = RGBColor(0x4F, 0x46, 0xE5)  # indigo-600
 
-        doc.add_heading(story.get("title", f"Story {i + 1}"), level=1)
+        doc.add_heading(_safe(story.get("title", f"Story {i + 1}")), level=1)
 
         # Metadata line
         meta = doc.add_paragraph()
-        meta.add_run(f"Priority: {story.get('priority', '?')}").bold = True
-        meta.add_run(f"   |   Story Points: {story.get('story_points_estimate', '?')}")
+        meta.add_run(f"Priority: {_safe(story.get('priority', '?'))}").bold = True
+        meta.add_run(f"   |   Story Points: {_safe(story.get('story_points_estimate', '?'))}")
 
         # ── Section 2: User Story Statement ──────────────────────────────────
         _add_section_heading(doc, "2. User Story Statement")
         statement = (
-            f"As a {story.get('role', '')}, "
-            f"I want {story.get('want', '')}, "
-            f"so that {story.get('benefit', '')}."
+            f"As a {_safe(story.get('role', ''))}, "
+            f"I want {_safe(story.get('want', ''))}, "
+            f"so that {_safe(story.get('benefit', ''))}."
         )
         doc.add_paragraph(statement)
 
         # ── Section 3: Detailed Description ──────────────────────────────────
         _add_section_heading(doc, "3. Detailed Description")
-        desc = story.get("detailed_description", "").strip()
+        desc = _safe(story.get("detailed_description", "")).strip()
         doc.add_paragraph(desc if desc else "Not provided.")
 
         # ── Section 4: Pre-Conditions ─────────────────────────────────────────

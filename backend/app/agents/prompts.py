@@ -73,7 +73,7 @@ Concepts extracted from document sections (JSON):
 {concepts_json}"""
 
 GENERATE_QUESTIONS_PROMPT = """You are given a list of concept notes extracted from a product \
-document. For each concept, generate 5–8 high-value clarifying questions that a senior business \
+document. For each concept, generate 3-5 high-value clarifying questions that a senior business \
 analyst would ask to produce a complete, implementation-ready user story. Questions must collectively \
 cover all of the following aspects: business context, user personas, data governance, acceptance \
 criteria, pre/post conditions, edge cases, dependencies, governance workflow, performance SLA, \

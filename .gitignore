@@ -1,3 +1,12 @@
+# Runtime data
+data/
+backend/.env
+frontend/node_modules/
+frontend/dist/
+.env
+sample_inputs/
+.vscode/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

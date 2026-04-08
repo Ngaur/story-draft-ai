@@ -25,6 +25,7 @@ interface SessionStore {
   conceptNodes: ConceptNode[];
   clarifyingQuestions: ClarifyingQuestion[];
   stories: UserStory[];
+  previousStories: UserStory[];
   artifactPath: string | null;
   errorMessage: string | null;
 
@@ -35,7 +36,7 @@ interface SessionStore {
   isSubmitting: boolean;
 
   // Actions
-  startNewSession: (file: File) => Promise<void>;
+  startNewSession: (file: File, supportingFiles?: File[]) => Promise<void>;
   applyStatusPoll: (payload: StatusPayload) => void;
   submitClarificationAnswers: (answers: ClarificationAnswer[]) => Promise<void>;
   submitReview: (stories: UserStory[], feedback: string) => Promise<void>;
@@ -51,6 +52,7 @@ const INITIAL: Pick<
   | "conceptNodes"
   | "clarifyingQuestions"
   | "stories"
+  | "previousStories"
   | "artifactPath"
   | "errorMessage"
   | "viewingSession"
@@ -60,6 +62,7 @@ const INITIAL: Pick<
   conceptNodes: [],
   clarifyingQuestions: [],
   stories: [],
+  previousStories: [],
   artifactPath: null,
   errorMessage: null,
   viewingSession: null,
@@ -69,9 +72,9 @@ const INITIAL: Pick<
 export const useSessionStore = create<SessionStore>((set, get) => ({
   ...INITIAL,
 
-  startNewSession: async (file) => {
+  startNewSession: async (file, supportingFiles) => {
     set({ ...INITIAL, isSubmitting: true });
-    const session = await startSession(file);
+    const session = await startSession(file, supportingFiles);
     set({ session, isSubmitting: false });
   },
 
@@ -83,6 +86,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       conceptNodes: payload.concept_nodes ?? s.conceptNodes,
       clarifyingQuestions: payload.clarifying_questions ?? s.clarifyingQuestions,
       stories: payload.stories ?? s.stories,
+      previousStories: payload.status === "complete" ? [] : s.previousStories,
       artifactPath: payload.artifact_path ?? s.artifactPath,
       errorMessage: payload.error_message ?? s.errorMessage,
     }));
@@ -103,6 +107,10 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     const { session } = get();
     if (!session) return;
     set({ isSubmitting: true });
+    // Snapshot current stories before refinement so we can diff after polling
+    if (feedback.trim()) {
+      set({ previousStories: get().stories });
+    }
     await submitStoryReview(session.threadId, stories, feedback);
     set((s) => ({
       isSubmitting: false,

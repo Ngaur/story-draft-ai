@@ -12,9 +12,12 @@ import {
   Link2,
   Plus,
   Shield,
+  Sparkles,
   Trash2,
+  X,
 } from "lucide-react";
 import type { UserStory } from "@/types";
+import { changedSections } from "@/utils/storyDiff";
 
 const PRIORITY_COLORS = {
   High: "text-priority-high bg-priority-high/10 border-priority-high/30",
@@ -28,9 +31,16 @@ interface StoryCardProps {
   story: UserStory;
   onChange: (updated: UserStory) => void;
   readOnly?: boolean;
+  changedFields?: Set<string>;
+  isNew?: boolean;
 }
 
-export function StoryCard({ story, onChange, readOnly = false }: StoryCardProps) {
+export function StoryCard({ story, onChange, readOnly = false, changedFields, isNew = false }: StoryCardProps) {
+  const changed = changedFields ? changedSections(changedFields) : new Set<string>();
+  const headerChanged = changedFields
+    ? ["epic_title", "title", "role", "want", "benefit", "story_points_estimate", "priority"]
+        .some((f) => changedFields.has(f))
+    : false;
   function update<K extends keyof UserStory>(field: K, value: UserStory[K]) {
     onChange({ ...story, [field]: value });
   }
@@ -54,9 +64,14 @@ export function StoryCard({ story, onChange, readOnly = false }: StoryCardProps)
   return (
     <div className="rounded-xl bg-surface-card border border-surface-border border-l-[3px] border-l-accent overflow-hidden shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all duration-200">
       {/* ── Section 1 & 2: Header ─────────────────────────────────────────── */}
-      <div className="p-6 space-y-4">
+      <div className={`p-6 space-y-4 ${headerChanged ? "border-l-2 border-amber-400" : isNew ? "border-l-2 border-green-400" : ""}`}>
         {/* Epic badge + priority + points */}
         <div className="flex items-center gap-2 flex-wrap">
+          {isNew && (
+            <span className="text-xs font-semibold text-green-700 bg-green-50 border border-green-200 rounded px-2 py-0.5 tracking-wide">
+              NEW
+            </span>
+          )}
           {readOnly ? (
             <span className="text-xs text-accent bg-accent/10 border border-accent/30 rounded px-2 py-0.5 font-medium">
               {story.epic_title || "—"}
@@ -121,9 +136,16 @@ export function StoryCard({ story, onChange, readOnly = false }: StoryCardProps)
         </div>
       </div>
 
+      {isNew && story.change_summary && (
+        <NewStoryBanner summary={story.change_summary} />
+      )}
+      {!isNew && story.change_summary && changedFields && changedFields.size > 0 && (
+        <ChangeSummaryBanner summary={story.change_summary} />
+      )}
+
       <div className="divide-y divide-surface-border border-t border-surface-border">
         {/* Section 3: Detailed Description */}
-        <Section label="Detailed Description" icon={FileText} defaultOpen>
+        <Section label="Detailed Description" icon={FileText} defaultOpen isChanged={changed.has("Detailed Description")}>
           {readOnly ? (
             <p className="text-text-secondary text-sm whitespace-pre-wrap">{story.detailed_description}</p>
           ) : (
@@ -138,7 +160,7 @@ export function StoryCard({ story, onChange, readOnly = false }: StoryCardProps)
         </Section>
 
         {/* Sections 4 & 5: Pre / Post Conditions */}
-        <Section label="Pre-Conditions & Post-Conditions" icon={GitBranch}>
+        <Section label="Pre-Conditions & Post-Conditions" icon={GitBranch} isChanged={changed.has("Pre-Conditions & Post-Conditions")}>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
               <SectionLabel>Pre-Conditions</SectionLabel>
@@ -166,7 +188,7 @@ export function StoryCard({ story, onChange, readOnly = false }: StoryCardProps)
         </Section>
 
         {/* Section 6: Data Governance */}
-        <Section label="Data Governance" icon={Shield}>
+        <Section label="Data Governance" icon={Shield} isChanged={changed.has("Data Governance")}>
           <EditableList
             items={story.data_governance}
             readOnly={readOnly}
@@ -179,7 +201,7 @@ export function StoryCard({ story, onChange, readOnly = false }: StoryCardProps)
         </Section>
 
         {/* Section 7: Acceptance Criteria */}
-        <Section label="Acceptance Criteria" icon={CheckSquare} defaultOpen>
+        <Section label="Acceptance Criteria" icon={CheckSquare} defaultOpen isChanged={changed.has("Acceptance Criteria")}>
           <EditableList
             items={story.acceptance_criteria}
             readOnly={readOnly}
@@ -192,7 +214,7 @@ export function StoryCard({ story, onChange, readOnly = false }: StoryCardProps)
         </Section>
 
         {/* Sections 8 & 9: Assumptions & Assertions */}
-        <Section label="Assumptions & Assertions" icon={AlertCircle}>
+        <Section label="Assumptions & Assertions" icon={AlertCircle} isChanged={changed.has("Assumptions & Assertions")}>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
               <SectionLabel>Assumptions</SectionLabel>
@@ -220,7 +242,7 @@ export function StoryCard({ story, onChange, readOnly = false }: StoryCardProps)
         </Section>
 
         {/* Section 10: Edge Cases */}
-        <Section label="Edge Cases & Error Scenarios" icon={AlertTriangle}>
+        <Section label="Edge Cases & Error Scenarios" icon={AlertTriangle} isChanged={changed.has("Edge Cases & Error Scenarios")}>
           <EditableList
             items={story.edge_cases}
             readOnly={readOnly}
@@ -233,7 +255,7 @@ export function StoryCard({ story, onChange, readOnly = false }: StoryCardProps)
         </Section>
 
         {/* Section 11: Dependencies */}
-        <Section label="Dependencies" icon={Link2}>
+        <Section label="Dependencies" icon={Link2} isChanged={changed.has("Dependencies")}>
           <EditableList
             items={story.dependencies}
             readOnly={readOnly}
@@ -245,7 +267,7 @@ export function StoryCard({ story, onChange, readOnly = false }: StoryCardProps)
         </Section>
 
         {/* Sections 12 & 13: Example Data & Test Scenarios */}
-        <Section label="Example Data & Test Scenarios" icon={Code2}>
+        <Section label="Example Data & Test Scenarios" icon={Code2} isChanged={changed.has("Example Data & Test Scenarios")}>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
               <SectionLabel>Example Data & Scenarios</SectionLabel>
@@ -275,7 +297,7 @@ export function StoryCard({ story, onChange, readOnly = false }: StoryCardProps)
         </Section>
 
         {/* Section 14: Definition of Done */}
-        <Section label="Definition of Done" icon={CheckCircle2} defaultOpen>
+        <Section label="Definition of Done" icon={CheckCircle2} defaultOpen isChanged={changed.has("Definition of Done")}>
           <EditableList
             items={story.definition_of_done}
             readOnly={readOnly}
@@ -297,25 +319,36 @@ function Section({
   icon: Icon,
   children,
   defaultOpen = false,
+  isChanged = false,
 }: {
   label: string;
   icon?: React.ElementType;
   children: React.ReactNode;
   defaultOpen?: boolean;
+  isChanged?: boolean;
 }) {
-  const [open, setOpen] = useState(defaultOpen);
+  const [open, setOpen] = useState(defaultOpen || isChanged);
 
   return (
-    <div>
+    <div className={isChanged ? "border-l-2 border-amber-400" : ""}>
       <button
         onClick={() => setOpen((v) => !v)}
         className="w-full flex items-center justify-between px-6 py-3 text-left hover:bg-surface-hover transition-colors group"
       >
         <span className="flex items-center gap-2">
-          {Icon && <Icon className="h-3.5 w-3.5 text-accent/60 group-hover:text-accent transition-colors" />}
-          <span className="text-text-muted text-xs font-semibold uppercase tracking-wider">
+          {Icon && (
+            <Icon className={`h-3.5 w-3.5 transition-colors ${
+              isChanged ? "text-amber-400" : "text-accent/60 group-hover:text-accent"
+            }`} />
+          )}
+          <span className={`text-xs font-semibold uppercase tracking-wider ${
+            isChanged ? "text-amber-700" : "text-text-muted"
+          }`}>
             {label}
           </span>
+          {isChanged && (
+            <span className="h-1.5 w-1.5 rounded-full bg-amber-400 ml-0.5" />
+          )}
         </span>
         {open ? (
           <ChevronUp className="h-3.5 w-3.5 text-text-muted" />
@@ -324,6 +357,42 @@ function Section({
         )}
       </button>
       {open && <div className="px-6 pb-5">{children}</div>}
+    </div>
+  );
+}
+
+function NewStoryBanner({ summary }: { summary: string }) {
+  const [open, setOpen] = useState(true);
+  if (!open) return null;
+  return (
+    <div className="mx-6 mb-3 rounded-lg border border-green-200 bg-green-50 px-4 py-3 flex items-start gap-3">
+      <Sparkles className="h-4 w-4 text-green-500 mt-0.5 shrink-0" />
+      <p className="text-green-800 text-xs leading-relaxed flex-1">{summary}</p>
+      <button
+        onClick={() => setOpen(false)}
+        className="text-green-400 hover:text-green-600 transition-colors shrink-0"
+        aria-label="Dismiss"
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  );
+}
+
+function ChangeSummaryBanner({ summary }: { summary: string }) {
+  const [open, setOpen] = useState(true);
+  if (!open) return null;
+  return (
+    <div className="mx-6 mb-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 flex items-start gap-3">
+      <Sparkles className="h-4 w-4 text-amber-500 mt-0.5 shrink-0" />
+      <p className="text-amber-800 text-xs leading-relaxed flex-1">{summary}</p>
+      <button
+        onClick={() => setOpen(false)}
+        className="text-amber-400 hover:text-amber-600 transition-colors shrink-0"
+        aria-label="Dismiss change summary"
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
     </div>
   );
 }

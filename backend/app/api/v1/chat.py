@@ -56,10 +56,11 @@ def _run_graph(thread_id: str, initial_state: dict | None = None) -> None:
 async def start_session(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
+    supporting_files: list[UploadFile] = File(default=[]),
 ) -> StartSessionResponse:
     """
-    Accept a PDF or DOCX upload.
-    Saves the file, registers the session, then runs the graph as a background task
+    Accept a PDF or DOCX upload, plus up to 5 optional supporting documents.
+    Saves all files, registers the session, then runs the graph as a background task
     until the clarification_review interrupt.
     """
     session_id = str(uuid.uuid4())
@@ -74,11 +75,26 @@ async def start_session(
             detail=f"File too large. Maximum allowed size is {settings.max_upload_size_mb} MB.",
         )
 
-    # Save uploaded file
+    # Save main uploaded file
     upload_dir = Path(settings.upload_dir) / session_id
     upload_dir.mkdir(parents=True, exist_ok=True)
     file_path = upload_dir / (file.filename or "document")
     file_path.write_bytes(content)
+
+    # Save optional supporting documents (up to 5)
+    supporting_doc_paths: list[str] = []
+    supporting_filenames: list[str] = []
+    for i, sup_file in enumerate(supporting_files[:5]):
+        if not sup_file or not sup_file.filename:
+            continue
+        sup_content = await sup_file.read()
+        if not sup_content:
+            continue
+        sup_suffix = Path(sup_file.filename).suffix or ""
+        sup_dest = upload_dir / f"supporting_{i}{sup_suffix}"
+        sup_dest.write_bytes(sup_content)
+        supporting_doc_paths.append(str(sup_dest))
+        supporting_filenames.append(sup_file.filename)
 
     # Register session in SQLite immediately (survives restart)
     registry.create_session(
@@ -100,6 +116,11 @@ async def start_session(
         "status": "processing",
         "error_message": None,
         "artifact_path": None,
+        "supporting_doc_paths": supporting_doc_paths,
+        "supporting_filenames": supporting_filenames,
+        "supporting_summaries": [],
+        "supporting_context_mode": None,
+        "supporting_index_path": None,
     }
 
     background_tasks.add_task(_run_graph, thread_id, initial_state)

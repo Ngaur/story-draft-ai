@@ -10,3 +10,7 @@ export async function getSession(sessionId: string): Promise<SessionDetail> {
   const { data } = await apiClient.get<SessionDetail>(`/sessions/${sessionId}`);
   return data;
 }
+
+export async function deleteSession(sessionId: string): Promise<void> {
+  await apiClient.delete(`/sessions/${sessionId}`);
+}

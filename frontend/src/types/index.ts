@@ -76,6 +76,9 @@ export interface UserStory {
   // Metadata
   story_points_estimate: number;
   priority: "High" | "Medium" | "Low";
+
+  // Populated by the LLM only after a refinement pass; null on initial draft
+  change_summary?: string | null;
 }
 
 export interface ActiveSession {

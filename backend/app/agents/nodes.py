@@ -2,23 +2,29 @@ import json
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import partial
 from pathlib import Path
+from typing import Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.services.llm_service import get_llm
+from app.services.vector_store import build_index, query_index
 from app.agents.prompts import (
     DRAFT_STORIES_PROMPT,
     GENERATE_QUESTIONS_PROMPT,
     MERGE_CONCEPTS_PROMPT,
     PARSE_DOCUMENT_PROMPT,
+    REFINE_ADDITIVE_PROMPT,
     REFINE_STORIES_PROMPT,
+    SUMMARISE_SUPPORTING_DOC_PROMPT,
     SYSTEM_PROMPT_ANALYST,
     SYSTEM_PROMPT_FACILITATOR,
 )
 from app.agents.response_models import (
     ConceptNodeListOutput,
     ClarifyingQuestionsOutput,
+    DocumentSummaryOutput,
     UserStoryListOutput,
 )
 from app.agents.state import WorkflowState
@@ -27,6 +33,139 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 MAX_PARALLEL_LLM_CALLS = 10  # max concurrent LLM calls (questions + draft_stories)
+
+
+def _inject_supporting_context(
+    prompt: str,
+    supporting_summaries: list[str],
+    supporting_context_mode: Optional[str],
+    index_path: Optional[str],
+    query: str,
+    k: int = 4,
+) -> str:
+    """Append supporting-document context to a prompt.
+
+    Always injects summaries when present — they are compact, noise-filtered, and carry
+    no retrieval error. In RAG mode additionally appends query-specific retrieved chunks
+    for detail-level accuracy. Returns prompt unchanged when no supporting docs exist.
+    """
+    if not supporting_summaries and not supporting_context_mode:
+        return prompt
+
+    result = prompt
+
+    # Summaries block — always present when supporting docs exist
+    if supporting_summaries:
+        block = "\n\n--- Supporting Document Summaries ---\n"
+        for i, summary in enumerate(supporting_summaries, 1):
+            block += f"\n[Document {i}]\n{summary}\n"
+        block += "--- End Summaries ---"
+        result += block
+
+    # RAG chunks — only in "rag" mode (large supporting corpus)
+    if supporting_context_mode == "rag" and index_path:
+        chunks = query_index(index_path, query, k=k)
+        if chunks:
+            block = "\n\n--- Relevant Detail (retrieved from supporting documents) ---\n"
+            block += "\n---\n".join(chunks)
+            block += "\n--- End Detail ---"
+            result += block
+
+    return result
+
+
+def index_supporting_docs(state: WorkflowState) -> dict:
+    """Summarise and optionally index all supporting documents.
+
+    Steps:
+    1. Extract raw text from each doc in parallel.
+    2. Measure total char count → decide "full" vs "rag" path.
+    3. Summarise each doc in parallel (one focused LLM call per doc, truncated to
+       max_doc_chars so even very large docs stay within context limits).
+    4. "rag" mode only: build a single merged FAISS index from concatenated raw text.
+
+    Returns state updates for supporting_summaries, supporting_context_mode, and
+    (in rag mode) supporting_index_path. Non-fatal throughout — any failure is logged
+    and an empty dict is returned so the workflow continues without supporting context.
+    """
+    from app.services.document_parser import extract_text
+
+    doc_paths: list[str] = state.get("supporting_doc_paths") or []
+    if not doc_paths:
+        return {}
+
+    # ── Step 1: Extract raw text (parallel) ──────────────────────────────────
+    raw_texts: list[str] = []
+    with ThreadPoolExecutor(max_workers=min(len(doc_paths), 5)) as ex:
+        futures = {ex.submit(extract_text, p): p for p in doc_paths if Path(p).exists()}
+        for future, path in futures.items():
+            try:
+                text = future.result()
+                if text.strip():
+                    raw_texts.append(text)
+            except Exception as e:
+                logger.warning("Could not parse supporting doc %s (skipped): %s", path, e)
+
+    if not raw_texts:
+        return {}
+
+    # ── Step 2: Threshold decision ────────────────────────────────────────────
+    total_chars = sum(len(t) for t in raw_texts)
+    threshold = settings.max_supporting_full_context_chars
+    mode = "full" if total_chars <= threshold else "rag"
+    logger.info(
+        "Supporting docs: %d file(s), %d total chars → mode=%s (threshold=%d)",
+        len(raw_texts), total_chars, mode, threshold,
+    )
+
+    # ── Step 3: Summarise each doc in parallel ────────────────────────────────
+    def _summarise_one(text: str) -> str:
+        truncated = text[: settings.max_doc_chars]
+        llm = get_llm()
+        structured_llm = llm.with_structured_output(DocumentSummaryOutput)
+        prompt = SUMMARISE_SUPPORTING_DOC_PROMPT.format(document_text=truncated)
+        result: DocumentSummaryOutput = structured_llm.invoke(  # type: ignore[assignment]
+            [
+                SystemMessage(content=SYSTEM_PROMPT_ANALYST),
+                HumanMessage(content=prompt),
+            ]
+        )
+        return result.summary
+
+    ordered_summaries: dict[int, str] = {}
+    with ThreadPoolExecutor(max_workers=min(len(raw_texts), 5)) as ex:
+        future_to_idx = {ex.submit(_summarise_one, t): i for i, t in enumerate(raw_texts)}
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            try:
+                ordered_summaries[idx] = future.result()
+                logger.info("Summarised supporting doc %d/%d", idx + 1, len(raw_texts))
+            except Exception as e:
+                logger.warning("Summarisation failed for doc %d (skipped): %s", idx + 1, e)
+
+    summaries = [ordered_summaries[i] for i in range(len(raw_texts)) if i in ordered_summaries]
+    if not summaries:
+        return {}
+
+    # ── Step 4: Build FAISS index (RAG mode only) ─────────────────────────────
+    index_path: Optional[str] = None
+    if mode == "rag":
+        session_id = state["session_id"]
+        index_path = str(Path(settings.upload_dir) / session_id / "supporting_index")
+        try:
+            merged_text = "\n\n".join(raw_texts)
+            build_index(merged_text, index_path)
+            logger.info("Built merged FAISS index at %s", index_path)
+        except Exception as e:
+            logger.warning("FAISS index build failed, falling back to summaries only: %s", e)
+            mode = "full"
+            index_path = None
+
+    return {
+        "supporting_summaries": summaries,
+        "supporting_context_mode": mode,
+        "supporting_index_path": index_path,
+    }
 
 
 def parse_document(state: WorkflowState) -> dict:
@@ -150,7 +289,12 @@ def _map_reduce_concepts(raw_text: str, structured_llm) -> list:  # type: ignore
         return all_concepts
 
 
-def _generate_questions_for_concept(concept: dict) -> list[dict]:
+def _generate_questions_for_concept(
+    concept: dict,
+    supporting_summaries: list[str] = [],
+    supporting_context_mode: Optional[str] = None,
+    supporting_index_path: Optional[str] = None,
+) -> list[dict]:
     """Generate clarifying questions for a single concept — runs in its own thread.
 
     Creates a fresh LLM client per call (thread-safety). Passes the single concept as a
@@ -164,8 +308,13 @@ def _generate_questions_for_concept(concept: dict) -> list[dict]:
     """
     llm = get_llm()
     structured_llm = llm.with_structured_output(ClarifyingQuestionsOutput)
-    prompt = GENERATE_QUESTIONS_PROMPT.format(
+    base_prompt = GENERATE_QUESTIONS_PROMPT.format(
         concept_nodes_json=json.dumps([concept], indent=2)
+    )
+    query = f"{concept.get('title', '')} {concept.get('description', '')[:200]}"
+    prompt = _inject_supporting_context(
+        base_prompt, supporting_summaries, supporting_context_mode,
+        supporting_index_path, query,
     )
     result: ClarifyingQuestionsOutput = structured_llm.invoke(  # type: ignore[assignment]
         [
@@ -194,10 +343,16 @@ def generate_clarifying_questions(state: WorkflowState) -> dict:
     workers = min(n, MAX_PARALLEL_LLM_CALLS)
 
     ordered: dict[int, list[dict]] = {}
+    fn = partial(
+        _generate_questions_for_concept,
+        supporting_summaries=state.get("supporting_summaries") or [],
+        supporting_context_mode=state.get("supporting_context_mode"),
+        supporting_index_path=state.get("supporting_index_path"),
+    )
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         future_to_idx = {
-            executor.submit(_generate_questions_for_concept, concept): i
+            executor.submit(fn, concept): i
             for i, concept in enumerate(concept_nodes)
         }
 
@@ -248,7 +403,13 @@ def clarification_review(state: WorkflowState) -> dict:
     return {"status": "processing"}
 
 
-def _draft_one_concept(concept: dict, answers_for_concept: list[dict]) -> list[dict]:
+def _draft_one_concept(
+    concept: dict,
+    answers_for_concept: list[dict],
+    supporting_summaries: list[str] = [],
+    supporting_context_mode: Optional[str] = None,
+    supporting_index_path: Optional[str] = None,
+) -> list[dict]:
     """Draft stories for a single concept — runs in its own thread.
 
     Creates a fresh LLM client per call: ChatOpenAI's underlying httpx client is not
@@ -257,9 +418,14 @@ def _draft_one_concept(concept: dict, answers_for_concept: list[dict]) -> list[d
     """
     llm = get_llm()
     structured_llm = llm.with_structured_output(UserStoryListOutput)
-    prompt = DRAFT_STORIES_PROMPT.format(
+    base_prompt = DRAFT_STORIES_PROMPT.format(
         concept_nodes_json=json.dumps([concept], indent=2),
         clarification_answers_json=json.dumps(answers_for_concept, indent=2),
+    )
+    query = f"{concept.get('title', '')} {concept.get('description', '')[:200]}"
+    prompt = _inject_supporting_context(
+        base_prompt, supporting_summaries, supporting_context_mode,
+        supporting_index_path, query,
     )
     result: UserStoryListOutput = structured_llm.invoke(  # type: ignore[assignment]
         [
@@ -293,11 +459,17 @@ def draft_stories(state: WorkflowState) -> dict:
     workers = min(n, MAX_PARALLEL_LLM_CALLS)
 
     ordered: dict[int, list[dict]] = {}
+    draft_fn = partial(
+        _draft_one_concept,
+        supporting_summaries=state.get("supporting_summaries") or [],
+        supporting_context_mode=state.get("supporting_context_mode"),
+        supporting_index_path=state.get("supporting_index_path"),
+    )
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         future_to_idx = {
             executor.submit(
-                _draft_one_concept,
+                draft_fn,
                 concept,
                 answers_by_concept.get(concept.get("id", ""), []),
             ): i
@@ -347,7 +519,13 @@ def story_review(state: WorkflowState) -> dict:
     return {"status": "processing"}
 
 
-def _refine_one_story(story: dict, refinement_feedback: str) -> dict:
+def _refine_one_story(
+    story: dict,
+    refinement_feedback: str,
+    supporting_summaries: list[str] = [],
+    supporting_context_mode: Optional[str] = None,
+    supporting_index_path: Optional[str] = None,
+) -> dict:
     """Refine a single story in its own thread — runs in parallel with all other stories.
 
     Every call receives the FULL refinement feedback text (not a subset), so:
@@ -367,9 +545,17 @@ def _refine_one_story(story: dict, refinement_feedback: str) -> dict:
     """
     llm = get_llm()
     structured_llm = llm.with_structured_output(UserStoryListOutput)
-    prompt = REFINE_STORIES_PROMPT.format(
+    base_prompt = REFINE_STORIES_PROMPT.format(
         refinement_feedback=refinement_feedback,
         stories_json=json.dumps([story], indent=2),
+    )
+    query = (
+        f"{story.get('epic_title', '')} {story.get('title', '')} "
+        f"{story.get('detailed_description', '')[:150]}"
+    )
+    prompt = _inject_supporting_context(
+        base_prompt, supporting_summaries, supporting_context_mode,
+        supporting_index_path, query,
     )
     result: UserStoryListOutput = structured_llm.invoke(  # type: ignore[assignment]
         [
@@ -377,8 +563,51 @@ def _refine_one_story(story: dict, refinement_feedback: str) -> dict:
             HumanMessage(content=prompt),
         ]
     )
-    # One story in → one story out; fall back to original if LLM returns empty
-    return result.stories[0].model_dump() if result.stories else story
+    # One story in → one story out; fall back to original if LLM returns empty.
+    # Always restore original id/concept_id — the LLM may omit or regenerate them,
+    # which would break frontend diff lookups.
+    refined = result.stories[0].model_dump() if result.stories else story
+    refined["id"] = story["id"]
+    refined["concept_id"] = story["concept_id"]
+    return refined
+
+
+def _draft_additional_stories(feedback: str, existing_stories: list[dict]) -> list[dict]:
+    """Single LLM call that creates brand-new stories requested by additive feedback.
+
+    Runs AFTER the parallel per-story refinement pass.  Each per-story call only
+    sees one existing story, so feedback like "add a story for the rule engine"
+    cannot be handled there — no individual call has enough context to create something
+    completely new.  This dedicated call receives a summary of all existing stories and
+    returns ONLY genuinely new stories.
+
+    Returns an empty list if the feedback does not request new stories.
+    """
+    llm = get_llm()
+    structured_llm = llm.with_structured_output(UserStoryListOutput)
+    prompt = REFINE_ADDITIVE_PROMPT.format(
+        refinement_feedback=feedback,
+        existing_stories_summary=json.dumps(
+            [
+                {
+                    "id": s.get("id", ""),
+                    "concept_id": s.get("concept_id", ""),
+                    "title": s.get("title", ""),
+                    "epic_title": s.get("epic_title", ""),
+                }
+                for s in existing_stories
+            ],
+            indent=2,
+        ),
+    )
+    result: UserStoryListOutput = structured_llm.invoke(  # type: ignore[assignment]
+        [
+            SystemMessage(content=SYSTEM_PROMPT_ANALYST),
+            HumanMessage(content=prompt),
+        ]
+    )
+    existing_ids = {s.get("id", "") for s in existing_stories}
+    return [s.model_dump() for s in result.stories if s.id not in existing_ids]
 
 
 def refine_stories(state: WorkflowState) -> dict:
@@ -394,10 +623,16 @@ def refine_stories(state: WorkflowState) -> dict:
     workers = min(n, MAX_PARALLEL_LLM_CALLS)
 
     ordered: dict[int, dict] = {}
+    refine_fn = partial(
+        _refine_one_story,
+        supporting_summaries=state.get("supporting_summaries") or [],
+        supporting_context_mode=state.get("supporting_context_mode"),
+        supporting_index_path=state.get("supporting_index_path"),
+    )
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         future_to_idx = {
-            executor.submit(_refine_one_story, story, feedback): i
+            executor.submit(refine_fn, story, feedback): i
             for i, story in enumerate(stories)
         }
 
@@ -420,8 +655,23 @@ def refine_stories(state: WorkflowState) -> dict:
                     ),
                 }
 
+    refined_stories = [ordered[i] for i in range(n)]
+
+    # Additive phase — one extra LLM call to create any new stories the feedback
+    # requests.  Per-story parallel calls cannot do this because each only sees one
+    # existing story and has no way to produce a wholly new one.
+    try:
+        new_stories = _draft_additional_stories(feedback, refined_stories)
+        if new_stories:
+            logger.info(
+                "Additive refinement created %d new story/stories", len(new_stories)
+            )
+        refined_stories.extend(new_stories)
+    except Exception as e:
+        logger.warning("Additive refinement step failed (non-fatal): %s", e)
+
     return {
-        "stories": [ordered[i] for i in range(n)],
+        "stories": refined_stories,
         "refinement_feedback": None,  # clear for next review cycle
         "status": "awaiting_review",
     }

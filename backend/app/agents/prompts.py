@@ -73,11 +73,18 @@ Concepts extracted from document sections (JSON):
 {concepts_json}"""
 
 GENERATE_QUESTIONS_PROMPT = """You are given a list of concept notes extracted from a product \
-document. For each concept, generate 3-5 high-value clarifying questions that a senior business \
+document. For each concept, generate 3–8 high-value clarifying questions that a senior business \
 analyst would ask to produce a complete, implementation-ready user story. Questions must collectively \
 cover all of the following aspects: business context, user personas, data governance, acceptance \
 criteria, pre/post conditions, edge cases, dependencies, governance workflow, performance SLA, \
 MVP scope boundaries, and implicit operational dependencies.
+
+CONTEXT AWARENESS — MANDATORY:
+If Supporting Document Summaries are provided below, treat them as already-known information. \
+For each coverage target, check whether the supporting documents already answer it clearly and \
+completely. If they do, skip that question — do not ask for information you already have. \
+The minimum number of questions is 3 (not 5) when supporting context is present and covers \
+several targets. Only generate questions for gaps that the supporting documents leave open.
 
 QUESTION QUALITY RULES:
 - Reference specific entities: use the exact system names, acronyms, domain objects, and personas \
@@ -86,7 +93,8 @@ QUESTION QUALITY RULES:
 - Clarify unknown acronyms and platforms: if the concept references a system, platform, or acronym \
   that is not explained (e.g. "AMPS", "FSS", "CYBS", "MPGS"), ask (a) what it is and (b) whether \
   it is an existing production system or being built new for this initiative.
-- Do not ask questions whose answers are already stated in the concept description.
+- Do not ask questions whose answers are already stated in the concept description or clearly \
+  covered by the Supporting Document Summaries provided below.
 - Each question must unlock information that directly improves one or more story sections.
 - Do not repeat equivalent questions across concepts.
 - Surface implicit operational dependencies: if a concept requires reference data, configuration \
@@ -98,9 +106,9 @@ QUESTION QUALITY RULES:
 - For any concept involving rules, policies, or configuration: always ask at what scope they \
   apply using a multiple_choice question (e.g. "Global platform-wide / Merchant-specific / \
   Terminal (MID/TID) specific / Channel-specific").
-- Question diversity is mandatory: across your 5–8 questions per concept, you MUST use all \
-  three question types (open, yes_no, multiple_choice). A set of questions that uses only \
-  open-ended questions is invalid.
+- Question diversity is mandatory: across your questions per concept, you MUST use at least \
+  two distinct question types (open, yes_no, multiple_choice, multiple_select). A set of \
+  questions that uses only open-ended questions is invalid.
 
 QUESTION TYPE SELECTION — MANDATORY RULES:
 
@@ -371,8 +379,70 @@ Your task:
 - Maintain all 15 sections in every story — do not drop or abbreviate any section
 - Ensure all acceptance criteria remain in Given-When-Then format after refinement
 
+CHANGE SUMMARY RULE:
+For EACH story you return, populate the `change_summary` field with 1–3 sentences in \
+past tense describing what actually changed in that story during this refinement pass \
+(e.g. "Tightened acceptance criteria into explicit Given-When-Then format; added two \
+edge cases for timeout and concurrent update scenarios; raised priority to High to \
+reflect stakeholder urgency."). If the feedback did not result in any change to a \
+particular story, output the JSON value null (not the string "null", not "No changes \
+were made" — literally the JSON null value) for the `change_summary` field.
+
 Refinement feedback from stakeholder:
 {refinement_feedback}
 
 Current stories (may include manual edits, JSON):
 {stories_json}"""
+
+REFINE_ADDITIVE_PROMPT = """You are reviewing refinement feedback from a human stakeholder to \
+determine whether any BRAND-NEW user stories need to be created that do not currently exist \
+in the story pack.
+
+Your ONLY job is to create new stories explicitly requested by the feedback.
+- Do NOT return or modify any existing stories — those are handled separately.
+- If the feedback does not request any new stories, return an EMPTY list.
+- If the feedback does request new stories, create them in full following all standard rules:
+  all 15 sections, INVEST principles, Given-When-Then acceptance criteria, and Fibonacci \
+  story points.
+- Set `concept_id` to the id of the most relevant existing story's concept_id (from the \
+  summary below), or generate a new UUID if the new story belongs to a completely new concept.
+- Set `change_summary` to a sentence describing what was added, e.g. "New story added per \
+  stakeholder request for rule engine implementation coverage."
+
+Examples of ADDITIVE feedback (you SHOULD create stories):
+  - "add a story for the implementation of the rule engine"
+  - "we need a story covering the admin audit log export feature"
+  - "include a user story for password reset via email"
+
+Examples of MODIFICATION feedback (return EMPTY list — not your job):
+  - "make acceptance criteria more testable"
+  - "tighten the Given-When-Then format across all stories"
+  - "the routing story needs more edge cases"
+
+Existing stories (title, epic, IDs — do NOT return any of these):
+{existing_stories_summary}
+
+Refinement feedback from stakeholder:
+{refinement_feedback}"""
+
+
+# ── Supporting document summarisation ─────────────────────────────────────────
+
+SUMMARISE_SUPPORTING_DOC_PROMPT = """You are given the text of a supporting reference document \
+(e.g. a technical specification, architecture decision record, data model, or domain glossary) \
+that accompanies a product requirement document.
+
+Produce a concise 200–400 word summary that captures ONLY what is relevant to writing \
+implementation-ready user stories:
+
+1. Core purpose and scope of this document
+2. Key domain entities, their definitions, and relationships
+3. Business rules, constraints, and invariants
+4. Technical requirements, limitations, or non-functional expectations
+5. Important terminology, acronyms, or domain-specific vocabulary
+
+Omit: table of contents, revision history, formatting instructions, organisational boilerplate, \
+and any content that a story writer would never reference.
+
+Document text:
+{document_text}"""

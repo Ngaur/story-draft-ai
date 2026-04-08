@@ -8,9 +8,15 @@ import type {
   UserStory,
 } from "@/types";
 
-export async function startSession(file: File): Promise<ActiveSession> {
+export async function startSession(
+  file: File,
+  supportingFiles?: File[]
+): Promise<ActiveSession> {
   const form = new FormData();
   form.append("file", file);
+  for (const sf of supportingFiles ?? []) {
+    form.append("supporting_files", sf);
+  }
   const { data } = await apiClient.post<{
     session_id: string;
     thread_id: string;

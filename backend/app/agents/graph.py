@@ -9,6 +9,7 @@ from app.agents.nodes import (
     draft_stories,
     format_for_export,
     generate_clarifying_questions,
+    index_supporting_docs,
     parse_document,
     refine_stories,
     route_after_story_review,
@@ -48,6 +49,7 @@ def create_graph():
     builder = StateGraph(WorkflowState)
 
     builder.add_node("parse_document", parse_document)
+    builder.add_node("index_supporting_docs", index_supporting_docs)
     builder.add_node("generate_clarifying_questions", generate_clarifying_questions)
     builder.add_node("clarification_review", clarification_review)
     builder.add_node("draft_stories", draft_stories)
@@ -56,7 +58,8 @@ def create_graph():
     builder.add_node("format_for_export", format_for_export)
 
     builder.set_entry_point("parse_document")
-    builder.add_edge("parse_document", "generate_clarifying_questions")
+    builder.add_edge("parse_document", "index_supporting_docs")
+    builder.add_edge("index_supporting_docs", "generate_clarifying_questions")
     builder.add_edge("generate_clarifying_questions", "clarification_review")
     builder.add_edge("clarification_review", "draft_stories")
     builder.add_edge("draft_stories", "story_review")

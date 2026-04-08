@@ -32,3 +32,10 @@ class WorkflowState(TypedDict):
 
     # Export
     artifact_path: Optional[str]
+
+    # Supporting documents (optional multi-upload)
+    supporting_doc_paths: list[str]         # raw upload paths — consumed by index_supporting_docs
+    supporting_filenames: list[str]         # original filenames for display
+    supporting_summaries: list[str]         # LLM-generated summary per doc; set by index_supporting_docs
+    supporting_context_mode: Optional[str]  # "full" | "rag" | None (None = no supporting docs)
+    supporting_index_path: Optional[str]    # FAISS index dir; only set in "rag" mode

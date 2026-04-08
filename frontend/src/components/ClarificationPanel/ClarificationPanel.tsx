@@ -290,14 +290,46 @@ function QuestionField({
                 </div>
               )}
 
-              {question.question_type === "multiple_choice" && question.options && (
-                <div className="flex flex-col gap-2">
-                  {question.options.map((opt) => (
+              {question.question_type === "multiple_choice" && question.options && (() => {
+                const baseOptions = question.options;
+                // "Others" is selected when value is non-empty and not one of the predefined options
+                const isOthersSelected = value !== "" && !baseOptions.includes(value);
+                // Show empty in the text box when value is the "Others" placeholder (not yet typed)
+                const othersTextValue = isOthersSelected && value !== "Others" ? value : "";
+                return (
+                  <div className="flex flex-col gap-2">
+                    {baseOptions.map((opt) => (
+                      <label
+                        key={opt}
+                        className={[
+                          "flex items-center gap-2.5 px-3 py-2 rounded-lg border cursor-pointer text-sm transition-colors",
+                          value === opt
+                            ? "border-accent bg-accent/5 text-accent"
+                            : "border-surface-border text-text-secondary hover:border-accent/40",
+                        ].join(" ")}
+                      >
+                        <input
+                          type="radio"
+                          name={question.question_text}
+                          value={opt}
+                          checked={value === opt}
+                          onChange={() => onChange(opt)}
+                          className="hidden"
+                        />
+                        <span className={[
+                          "w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0",
+                          value === opt ? "border-accent" : "border-surface-border",
+                        ].join(" ")}>
+                          {value === opt && <span className="w-2 h-2 rounded-full bg-accent" />}
+                        </span>
+                        {opt}
+                      </label>
+                    ))}
+                    {/* Others option */}
                     <label
-                      key={opt}
                       className={[
                         "flex items-center gap-2.5 px-3 py-2 rounded-lg border cursor-pointer text-sm transition-colors",
-                        value === opt
+                        isOthersSelected
                           ? "border-accent bg-accent/5 text-accent"
                           : "border-surface-border text-text-secondary hover:border-accent/40",
                       ].join(" ")}
@@ -305,68 +337,134 @@ function QuestionField({
                       <input
                         type="radio"
                         name={question.question_text}
-                        value={opt}
-                        checked={value === opt}
-                        onChange={() => onChange(opt)}
+                        value="Others"
+                        checked={isOthersSelected}
+                        onChange={() => onChange("Others")}
                         className="hidden"
                       />
                       <span className={[
                         "w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0",
-                        value === opt ? "border-accent" : "border-surface-border",
+                        isOthersSelected ? "border-accent" : "border-surface-border",
                       ].join(" ")}>
-                        {value === opt && <span className="w-2 h-2 rounded-full bg-accent" />}
+                        {isOthersSelected && <span className="w-2 h-2 rounded-full bg-accent" />}
                       </span>
-                      {opt}
+                      Others
                     </label>
-                  ))}
-                </div>
-              )}
+                    {isOthersSelected && (
+                      <input
+                        autoFocus
+                        value={othersTextValue}
+                        onChange={(e) => onChange(e.target.value.trim() || "Others")}
+                        placeholder="Please specify…"
+                        className="w-full rounded-lg bg-surface border border-accent/40 px-3 py-2 text-text-primary text-sm placeholder:text-text-muted focus:outline-none focus:border-accent"
+                      />
+                    )}
+                  </div>
+                );
+              })()}
 
-              {question.question_type === "multiple_select" && question.options && (
-                <div className="flex flex-col gap-2">
-                  <p className="text-text-muted text-xs font-medium">Select all that apply</p>
-                  {question.options.map((opt) => {
-                    const selected = value
-                      ? value.split(",").map((s) => s.trim()).filter(Boolean)
-                      : [];
-                    const isChecked = selected.includes(opt);
-                    return (
-                      <label
-                        key={opt}
-                        className={[
-                          "flex items-center gap-2.5 px-3 py-2 rounded-lg border cursor-pointer text-sm transition-colors",
-                          isChecked
-                            ? "border-accent bg-accent/5 text-accent"
-                            : "border-surface-border text-text-secondary hover:border-accent/40",
-                        ].join(" ")}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={isChecked}
-                          onChange={() => {
-                            const next = isChecked
-                              ? selected.filter((s) => s !== opt)
-                              : [...selected, opt];
+              {question.question_type === "multiple_select" && question.options && (() => {
+                const baseOptions = question.options;
+                const selected = value
+                  ? value.split(",").map((s) => s.trim()).filter(Boolean)
+                  : [];
+                // The "Others" custom value is any selected item that isn't one of the base options
+                const othersVal = selected.find((s) => !baseOptions.includes(s)) ?? null;
+                const isOthersChecked = othersVal !== null;
+                const othersTextValue = othersVal ?? "";
+                return (
+                  <div className="flex flex-col gap-2">
+                    <p className="text-text-muted text-xs font-medium">Select all that apply</p>
+                    {baseOptions.map((opt) => {
+                      const isChecked = selected.includes(opt);
+                      return (
+                        <label
+                          key={opt}
+                          className={[
+                            "flex items-center gap-2.5 px-3 py-2 rounded-lg border cursor-pointer text-sm transition-colors",
+                            isChecked
+                              ? "border-accent bg-accent/5 text-accent"
+                              : "border-surface-border text-text-secondary hover:border-accent/40",
+                          ].join(" ")}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={() => {
+                              const next = isChecked
+                                ? selected.filter((s) => s !== opt)
+                                : [...selected, opt];
+                              onChange(next.join(", "));
+                            }}
+                            className="hidden"
+                          />
+                          <span className={[
+                            "w-4 h-4 rounded border-2 flex items-center justify-center shrink-0",
+                            isChecked ? "border-accent bg-accent" : "border-surface-border",
+                          ].join(" ")}>
+                            {isChecked && (
+                              <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 10 10">
+                                <path d="M1.5 5l2.5 2.5 4.5-4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                              </svg>
+                            )}
+                          </span>
+                          {opt}
+                        </label>
+                      );
+                    })}
+                    {/* Others option */}
+                    <label
+                      className={[
+                        "flex items-center gap-2.5 px-3 py-2 rounded-lg border cursor-pointer text-sm transition-colors",
+                        isOthersChecked
+                          ? "border-accent bg-accent/5 text-accent"
+                          : "border-surface-border text-text-secondary hover:border-accent/40",
+                      ].join(" ")}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isOthersChecked}
+                        onChange={() => {
+                          if (isOthersChecked) {
+                            // Remove the custom/Others value from selection
+                            const next = selected.filter((s) => baseOptions.includes(s));
                             onChange(next.join(", "));
-                          }}
-                          className="hidden"
-                        />
-                        <span className={[
-                          "w-4 h-4 rounded border-2 flex items-center justify-center shrink-0",
-                          isChecked ? "border-accent bg-accent" : "border-surface-border",
-                        ].join(" ")}>
-                          {isChecked && (
-                            <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 10 10">
-                              <path d="M1.5 5l2.5 2.5 4.5-4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                            </svg>
-                          )}
-                        </span>
-                        {opt}
-                      </label>
-                    );
-                  })}
-                </div>
-              )}
+                          } else {
+                            // Add "Others" as a literal placeholder — text input replaces it when typed
+                            onChange([...selected, "Others"].join(", "));
+                          }
+                        }}
+                        className="hidden"
+                      />
+                      <span className={[
+                        "w-4 h-4 rounded border-2 flex items-center justify-center shrink-0",
+                        isOthersChecked ? "border-accent bg-accent" : "border-surface-border",
+                      ].join(" ")}>
+                        {isOthersChecked && (
+                          <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 10 10">
+                            <path d="M1.5 5l2.5 2.5 4.5-4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                          </svg>
+                        )}
+                      </span>
+                      Others
+                    </label>
+                    {isOthersChecked && (
+                      <input
+                        autoFocus
+                        value={othersTextValue === "Others" ? "" : othersTextValue}
+                        onChange={(e) => {
+                          // Replace the custom/Others entry with typed text; fall back to "Others" if cleared
+                          const customText = e.target.value.trim() || "Others";
+                          const withoutCustom = selected.filter((s) => baseOptions.includes(s));
+                          onChange([...withoutCustom, customText].join(", "));
+                        }}
+                        placeholder="Please specify…"
+                        className="w-full rounded-lg bg-surface border border-accent/40 px-3 py-2 text-text-primary text-sm placeholder:text-text-muted focus:outline-none focus:border-accent"
+                      />
+                    )}
+                  </div>
+                );
+              })()}
             </>
           )}
 

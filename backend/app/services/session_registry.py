@@ -164,6 +164,25 @@ class SessionRegistry:
             conn.close()
         return [json.loads(r[0]) for r in rows]
 
+    def delete_session(self, session_id: str) -> bool:
+        """Delete a session and all associated data from the database.
+
+        Returns True if a session row was deleted, False if it did not exist.
+        Artifact files on disk are removed by the API layer (it has access to
+        settings.artifacts_dir).
+        """
+        with self._lock:
+            conn = self._conn()
+            conn.execute("DELETE FROM concepts WHERE session_id=?", (session_id,))
+            conn.execute("DELETE FROM stories  WHERE session_id=?", (session_id,))
+            cursor = conn.execute(
+                "DELETE FROM sessions WHERE session_id=?", (session_id,)
+            )
+            conn.commit()
+            deleted = cursor.rowcount > 0
+            conn.close()
+        return deleted
+
 
 from app.core.config import settings
 

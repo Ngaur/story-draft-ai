@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     # Document ingestion limits
     max_upload_size_mb: int = 20       # HTTP 413 if file exceeds this
     max_doc_chars: int = 80_000        # above this, map-reduce extraction is used
+    max_supporting_full_context_chars: int = 25_000  # total chars across ALL supporting docs
+    # below this → inject summaries only (no FAISS); above → summaries + RAG
 
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
 

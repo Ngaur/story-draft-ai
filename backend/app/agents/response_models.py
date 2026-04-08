@@ -145,6 +145,15 @@ class UserStory(BaseModel):
                     "environment, and any compliance/audit requirements met."
     )
 
+    # ── Refinement change summary ─────────────────────────────────────────────
+    change_summary: Optional[str] = Field(
+        default=None,
+        description=(
+            "1–3 sentence plain-English summary of what changed in this refinement pass. "
+            "Populated ONLY during refinement — leave null for initial drafts."
+        ),
+    )
+
     # ── Metadata ──────────────────────────────────────────────────────────────
     story_points_estimate: int = Field(
         ge=1,
@@ -159,3 +168,16 @@ class UserStory(BaseModel):
 class UserStoryListOutput(BaseModel):
     """Wrapper — LLMs cannot return bare list[UserStory]."""
     stories: list[UserStory]
+
+
+class DocumentSummaryOutput(BaseModel):
+    """Structured output for a single supporting-document summarisation call."""
+    summary: str = Field(
+        description=(
+            "Concise 200-400 word summary of the document. Focus exclusively on: "
+            "core purpose and scope, key domain entities and their relationships, "
+            "business rules and constraints, technical requirements and limitations, "
+            "important terminology and definitions. Omit boilerplate, formatting "
+            "instructions, and content that has no bearing on feature development."
+        )
+    )

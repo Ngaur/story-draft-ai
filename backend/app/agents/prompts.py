@@ -227,11 +227,23 @@ WHEN NOT TO SPLIT:
 - Do NOT create stories for things that are clearly assumptions or NFRs — those belong in \
   sections of an existing story.
 
+USER VALUE GATE — MANDATORY:
+Every story you produce MUST deliver observable, end-user-facing or business-facing value. \
+Do not generate infrastructure-only stories (e.g. "Set up the database schema", \
+"Configure Redis cache", "Create API endpoint skeleton"). If a concept node maps entirely \
+to infrastructure with no user-observable outcome, merge its technical requirements into the \
+closest user-facing story as pre_conditions or detailed_description context — not as a \
+standalone story. A story passes the value gate if a non-technical stakeholder can read \
+the benefit field and immediately understand what problem it solves for them.
+
 INVEST COMPLIANCE RULES — every story you produce must satisfy all six criteria:
 
-- Independent: the story must be deliverable without depending on another unstarted story. \
-  If a dependency exists, call it out explicitly in the dependencies section and confirm \
-  whether it is a blocker or non-blocker.
+- Independent: the story must be deliverable without depending on a story that has not yet \
+  been completed. Dependencies on prior (already-completed) stories are acceptable and MUST \
+  be listed in the dependencies section. FORWARD DEPENDENCIES — this story depending on a \
+  story that appears later in the output — are FORBIDDEN. Re-order or merge stories to \
+  eliminate them. For every listed dependency, state: (a) whether it is a blocker or \
+  non-blocker, and (b) whether it is a preceding story in this pack or an external system.
 - Negotiable: avoid prescribing implementation solutions. Describe the desired outcome and \
   let the team determine approach.
 - Valuable: the benefit field must state a concrete, measurable business or user outcome — \
@@ -302,11 +314,19 @@ SECTIONS REQUIRED:
 
 8. acceptance_criteria
    Given-When-Then acceptance criteria covering BOTH functional and non-functional requirements. \
-   Minimum 4 criteria. At least one criterion must address a non-functional requirement \
-   (performance SLA, security control, accessibility standard, error handling, etc.).
-   Format each as: "Given [context], When [action], Then [outcome]."
-   Do not use vague statements like "The system should work correctly." Every criterion must \
-   have a concrete, testable Given, a specific When action, and an unambiguous Then outcome.
+   Minimum 4 criteria. Requirements:
+   - At least one criterion MUST address a non-functional requirement (performance SLA, \
+     security control, accessibility standard, error handling, etc.).
+   - At least one criterion MUST explicitly cover a failure mode, boundary condition, or error \
+     scenario — e.g. invalid input rejected with an informative message, downstream service \
+     unavailable and fallback triggered, concurrent update conflict resolved, empty result set \
+     handled gracefully, maximum threshold exceeded and enforced.
+   Format EVERY criterion strictly as: "Given [precondition / system state], When [specific \
+   user action or system event], Then [unambiguous, observable outcome]." \
+   Optionally add "And [additional validation]" clauses. \
+   Do not use vague statements like "the system works correctly" or "the user sees a message". \
+   Every Given must describe a concrete state, every When must name a specific action or trigger, \
+   and every Then must state a verifiable, observable result.
 
 9. assumptions
    Bulleted list of assumptions made during story creation that have not been formally confirmed. \
@@ -378,6 +398,15 @@ Your task:
 - If the feedback targets a specific story or section, only modify that story/section
 - Maintain all 15 sections in every story — do not drop or abbreviate any section
 - Ensure all acceptance criteria remain in Given-When-Then format after refinement
+
+EDGE-CASE HARDENING — MANDATORY (apply regardless of whether feedback mentions it):
+For every story in this refinement pass, verify that the acceptance_criteria list contains \
+at least one criterion that explicitly covers a failure mode, boundary condition, or error \
+scenario (e.g. invalid input rejected with an informative message, service unavailable and \
+fallback triggered, concurrent update conflict detected, empty result set handled gracefully, \
+maximum threshold exceeded and enforced). If any story is missing such a criterion, ADD one \
+in strict Given-When-Then format. This is a baseline quality gate — apply it to every story \
+in the response, not only the ones the stakeholder's feedback explicitly targets.
 
 CHANGE SUMMARY RULE:
 For EACH story you return, populate the `change_summary` field with 1–3 sentences in \

@@ -35,6 +35,7 @@ export function ClarificationPanel() {
 
   const allDecided = decidedCount === totalQuestions;
   const progressPct = totalQuestions > 0 ? Math.round((decidedCount / totalQuestions) * 100) : 0;
+  const unansweredCount = totalQuestions - decidedCount;
 
   function getKey(conceptId: string, questionText: string) {
     return `${conceptId}::${questionText}`;
@@ -46,6 +47,19 @@ export function ClarificationPanel() {
     setSkipped((prev) => {
       const next = new Set(prev);
       next.delete(key);
+      return next;
+    });
+  }
+
+  function skipAllUnanswered() {
+    setSkipped((prev) => {
+      const next = new Set(prev);
+      for (const q of clarifyingQuestions) {
+        const key = getKey(q.concept_id, q.question_text);
+        if (!next.has(key) && !(answers[key] ?? "").trim()) {
+          next.add(key);
+        }
+      }
       return next;
     });
   }
@@ -142,10 +156,18 @@ export function ClarificationPanel() {
         >
           {isSubmitting ? "Submitting…" : "Generate Stories"}
         </button>
-        {!allDecided && (
-          <p className="text-text-muted text-xs">
-            {totalQuestions - decidedCount} question{totalQuestions - decidedCount !== 1 ? "s" : ""} remaining — answer or skip to continue.
-          </p>
+        {!allDecided && !isSubmitting && (
+          <>
+            <button
+              onClick={skipAllUnanswered}
+              className="px-4 py-2 rounded-lg border border-surface-border text-text-secondary text-sm font-medium hover:border-text-muted hover:text-text-primary transition-colors bg-surface"
+            >
+              Skip All Unanswered
+            </button>
+            <p className="text-text-muted text-xs">
+              {unansweredCount} question{unansweredCount !== 1 ? "s" : ""} remaining
+            </p>
+          </>
         )}
       </div>
     </div>

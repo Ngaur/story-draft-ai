@@ -30,12 +30,14 @@ const FIBONACCI = [1, 2, 3, 5, 8, 13];
 interface StoryCardProps {
   story: UserStory;
   onChange: (updated: UserStory) => void;
+  onDelete?: () => void;
   readOnly?: boolean;
   changedFields?: Set<string>;
   isNew?: boolean;
 }
 
-export function StoryCard({ story, onChange, readOnly = false, changedFields, isNew = false }: StoryCardProps) {
+export function StoryCard({ story, onChange, onDelete, readOnly = false, changedFields, isNew = false }: StoryCardProps) {
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const changed = changedFields ? changedSections(changedFields) : new Set<string>();
   const headerChanged = changedFields
     ? ["epic_title", "title", "role", "want", "benefit", "story_points_estimate", "priority"]
@@ -112,6 +114,32 @@ export function StoryCard({ story, onChange, readOnly = false, changedFields, is
               >
                 {FIBONACCI.map((n) => <option key={n} value={n}>{n} pts</option>)}
               </select>
+            )}
+            {!readOnly && onDelete && (
+              confirmDelete ? (
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => { onDelete(); setConfirmDelete(false); }}
+                    className="text-xs px-2 py-1 rounded bg-status-error text-white font-medium hover:opacity-90 transition-opacity"
+                  >
+                    Delete
+                  </button>
+                  <button
+                    onClick={() => setConfirmDelete(false)}
+                    className="text-xs px-2 py-1 rounded border border-surface-border text-text-muted hover:text-text-secondary transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setConfirmDelete(true)}
+                  title="Delete this story"
+                  className="p-1.5 rounded-md text-text-muted hover:text-status-error hover:bg-red-50 transition-colors"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              )
             )}
           </div>
         </div>

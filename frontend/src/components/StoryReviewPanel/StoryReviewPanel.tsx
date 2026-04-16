@@ -45,6 +45,14 @@ export function StoryReviewPanel() {
     setStories((prev) => prev.map((s, i) => (i === index ? updated : s)));
   }
 
+  function deleteStory(index: number) {
+    setStories((prev) => {
+      const next = prev.filter((_, i) => i !== index);
+      return next;
+    });
+    setSelectedIndex((prev) => Math.min(prev, Math.max(0, stories.length - 2)));
+  }
+
   async function handleApprove() {
     await submitReview(stories, "");
   }
@@ -149,6 +157,7 @@ export function StoryReviewPanel() {
               key={currentStory.id}
               story={currentStory}
               onChange={(updated) => updateStory(safeIndex, updated)}
+              onDelete={() => deleteStory(safeIndex)}
               changedFields={changedFieldsById.get(currentStory.id)}
               isNew={isNew}
             />

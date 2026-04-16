@@ -35,6 +35,33 @@ logger = logging.getLogger(__name__)
 MAX_PARALLEL_LLM_CALLS = 10  # max concurrent LLM calls (questions + draft_stories)
 
 
+def _format_ac_dict(ac: dict | str) -> str:
+    """Serialize an AcceptanceCriterion dict to a human-readable G-W-T string.
+
+    Accepts both the dict form (from model_dump()) and plain strings (from legacy
+    sessions or manual edits) so this function is always safe to call on any
+    acceptance_criteria list item regardless of its origin.
+
+    Example output:
+        "Given the user is authenticated and on the routing rules page,
+         When they submit a new BIN range with a valid acquirer mapping,
+         Then the rule is persisted and a confirmation message is shown."
+    """
+    if isinstance(ac, str):
+        return ac
+    given = ac.get("given", "").strip()
+    when = ac.get("when", "").strip()
+    then = ac.get("then", "").strip()
+    and_clauses: list[str] = ac.get("and_clauses") or []
+
+    parts = [f"Given {given}, When {when}, Then {then}."]
+    for clause in and_clauses:
+        clause = clause.strip()
+        if clause:
+            parts.append(f"And {clause}.")
+    return " ".join(parts)
+
+
 def _inject_supporting_context(
     prompt: str,
     supporting_summaries: list[str],
@@ -433,7 +460,14 @@ def _draft_one_concept(
             HumanMessage(content=prompt),
         ]
     )
-    return [s.model_dump() for s in result.stories]
+    stories = []
+    for s in result.stories:
+        story_dict = s.model_dump()
+        story_dict["acceptance_criteria"] = [
+            _format_ac_dict(ac) for ac in story_dict["acceptance_criteria"]
+        ]
+        stories.append(story_dict)
+    return stories
 
 
 def draft_stories(state: WorkflowState) -> dict:
@@ -503,6 +537,25 @@ def draft_stories(state: WorkflowState) -> dict:
     for i in range(n):
         all_stories.extend(ordered.get(i, []))
 
+    # ── FR Coverage check (Enhancement 4) ────────────────────────────────────
+    # Verify every concept node is referenced by at least one drafted story.
+    # Gaps are logged as warnings — non-fatal, workflow continues normally.
+    covered_concept_ids = {s.get("concept_id", "") for s in all_stories}
+    coverage_gaps = [
+        c for c in concept_nodes
+        if c.get("id", "") not in covered_concept_ids
+    ]
+    if coverage_gaps:
+        for gap in coverage_gaps:
+            logger.warning(
+                "FR coverage gap: concept '%s' (id=%s) has no drafted story — "
+                "review whether it was merged into another story or was missed.",
+                gap.get("title", "unknown"),
+                gap.get("id", ""),
+            )
+    else:
+        logger.info("FR coverage check passed: all %d concept(s) covered.", n)
+
     return {"stories": all_stories, "status": "awaiting_review"}
 
 
@@ -569,6 +622,10 @@ def _refine_one_story(
     refined = result.stories[0].model_dump() if result.stories else story
     refined["id"] = story["id"]
     refined["concept_id"] = story["concept_id"]
+    # Serialize structured AcceptanceCriterion objects back to G-W-T strings.
+    refined["acceptance_criteria"] = [
+        _format_ac_dict(ac) for ac in refined.get("acceptance_criteria", [])
+    ]
     return refined
 
 
@@ -607,7 +664,16 @@ def _draft_additional_stories(feedback: str, existing_stories: list[dict]) -> li
         ]
     )
     existing_ids = {s.get("id", "") for s in existing_stories}
-    return [s.model_dump() for s in result.stories if s.id not in existing_ids]
+    new_stories = []
+    for s in result.stories:
+        if s.id in existing_ids:
+            continue
+        story_dict = s.model_dump()
+        story_dict["acceptance_criteria"] = [
+            _format_ac_dict(ac) for ac in story_dict["acceptance_criteria"]
+        ]
+        new_stories.append(story_dict)
+    return new_stories
 
 
 def refine_stories(state: WorkflowState) -> dict:

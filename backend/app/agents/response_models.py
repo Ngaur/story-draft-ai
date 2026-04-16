@@ -45,6 +45,40 @@ class ClarifyingQuestionsOutput(BaseModel):
 
 # ── User stories ──────────────────────────────────────────────────────────────
 
+class AcceptanceCriterion(BaseModel):
+    """Structured Given-When-Then acceptance criterion.
+
+    Enforces G-W-T structure at the schema level: the LLM must populate each
+    clause separately. Serialized to a formatted string before state storage
+    so no downstream consumer (export, Jira, frontend) requires changes.
+    """
+    given: str = Field(
+        description=(
+            "The precondition or system state that must hold true before the action. "
+            "Be specific — name the user role, data state, or configuration that is in place."
+        )
+    )
+    when: str = Field(
+        description=(
+            "The specific user action or system event that triggers the scenario. "
+            "Use an active verb phrase: 'the user submits…', 'the system receives…'."
+        )
+    )
+    then: str = Field(
+        description=(
+            "The unambiguous, observable outcome that must result. "
+            "State what the user sees or what the system does — no vague assertions."
+        )
+    )
+    and_clauses: list[str] = Field(
+        default=[],
+        description=(
+            "Optional additional validation steps that follow the Then clause. "
+            "Use sparingly — each And clause must be independently verifiable."
+        ),
+    )
+
+
 class UserStory(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     concept_id: str = Field(description="ID of the ConceptNode this story was derived from")
@@ -92,10 +126,14 @@ class UserStory(BaseModel):
     )
 
     # ── Section 7: Acceptance Criteria ───────────────────────────────────────
-    acceptance_criteria: list[str] = Field(
-        description="Given-When-Then format acceptance criteria covering both functional and "
-                    "non-functional requirements. Minimum 4 criteria; include at least one "
-                    "non-functional criterion (performance, security, accessibility, etc.)."
+    acceptance_criteria: list[AcceptanceCriterion] = Field(
+        description=(
+            "Structured Given-When-Then acceptance criteria. Minimum 4 criteria. "
+            "At least one MUST address a non-functional requirement (performance SLA, "
+            "security control, accessibility, error handling). "
+            "At least one MUST cover a failure mode, boundary condition, or error scenario "
+            "(invalid input, service unavailable, concurrent conflict, empty result, threshold exceeded)."
+        )
     )
 
     # ── Section 8: Assumptions ────────────────────────────────────────────────
